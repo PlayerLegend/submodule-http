@@ -18,7 +18,6 @@ bin/http-cat: src/convert/getline.o
 test/run-http-cat: src/http/test/run-http-cat.sh
 
 http-utils: bin/http-cat
-utils: http-utils
 
 http-tests: test/run-http-cat
 tests: http-tests
