@@ -1,13 +1,17 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <assert.h>
+#include <unistd.h>
 #define FLAT_INCLUDES
-#include "../array/range.h"
+#include "../range/def.h"
 #include "../window/def.h"
 #include "../window/alloc.h"
 #include "../keyargs/keyargs.h"
-#include "../convert/def.h"
-#include "../convert/fd.h"
+#include "../convert/source.h"
+#include "../convert/fd/source.h"
+#include "../convert/sink.h"
+#include "../convert/duplex.h"
+#include "../convert/fd/sink.h"
 #include "client.h"
 #include "../log/log.h"
 
@@ -23,33 +27,25 @@ int main (int argc, char * argv[])
     
     http_client * client = http_client_connect (host, port);
 
-    convert_interface_fd fd_out = convert_interface_fd_init(STDOUT_FILENO);
+    window_unsigned_char buffer = {0};
 
-    convert_interface * get;
+    fd_sink fd_sink = fd_sink_init(.fd = STDOUT_FILENO);
 
-    window_unsigned_char window = {0};
+    convert_source * get;
 
-    window_alloc (window, 1e6);
-    
-    bool error = false;
+    window_alloc (buffer, 1e6);
     
     for (int i = 3; i < argc; i++)
     {
 	get = http_client_get(client, argv[i]);
-	
-	while (convert_fill(&error, &window, get))
-	{
-	    if (!convert_drain (&error, &window, &fd_out.interface))
-	    {
-		log_fatal ("A write error occurred");
-	    }
-	}
 
-	if (error)
-	{
-	    log_fatal ("A read error occurred");
-	}
+	get->contents = &buffer;
 
+	if (!convert_join (&fd_sink.sink, get))
+	{
+	    log_fatal ("Failed to read or write data");
+	}
+        
 	http_get_free (get);
     }
     

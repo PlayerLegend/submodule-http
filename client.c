@@ -4,18 +4,18 @@
 #include <stdbool.h>
 #include <ctype.h>
 #include <assert.h>
+#include <string.h>
 #define FLAT_INCLUDES
-#include "../array/range.h"
-#include "../array/string.h"
+#include "../range/def.h"
+#include "../range/string.h"
 #include "../window/def.h"
 #include "../window/alloc.h"
-#include "../convert/def.h"
-#include "../convert/fd.h"
+#include "../keyargs/keyargs.h"
+#include "../convert/source.h"
+#include "../convert/fd/source.h"
 #include "../keyargs/keyargs.h"
 #include "../log/log.h"
 #include "../network/network.h"
-#include "../libc/string.h"
-#include "../libc/string-extensions.h"
 #include "../convert/getline.h"
 
 #define HTTP_VERSION "1.1"
@@ -24,15 +24,15 @@
 #define CRLF_LEN 2
 
 typedef struct {
-    convert_interface_fd read;
+    fd_source fd_source;
     char * host;
     char * port;
-    window_unsigned_char raw;
+    window_unsigned_char source_contents;
 }
     http_client;
 
 typedef struct {
-    convert_interface interface;
+    convert_source source;
     http_client * client;
     enum {
 	TRANSFER_ENCODING_IDENTITY,
@@ -49,7 +49,7 @@ static bool http_getline (bool * error, range_const_char * line, http_client * c
 {
     range_const_char end = { .begin = CRLF, .end = end.begin + CRLF_LEN };
 
-    return convert_getline(error, line, &client->raw, &client->read.interface, &end);
+    return convert_getline(error, line, &client->fd_source.source, &end);
 }
 
 static void skip_isspace (bool pred, const char ** begin, const char * max)
@@ -155,10 +155,10 @@ fail:
     return false;
 }
 
-static bool http_get_contents_chunked_header_func (bool * error, window_unsigned_char * output, convert_interface * interface, size_t limit);
-static bool http_get_body_func (bool * error, window_unsigned_char * output, convert_interface * interface, size_t limit)
+static bool http_get_contents_chunked_header_func (bool * error, convert_source * source);
+static bool http_get_body_func (bool * error, convert_source * source)
 {
-    convert_interface_http_get * get = (convert_interface_http_get*) interface;
+    convert_interface_http_get * get = (convert_interface_http_get*) source;
     
     if (get->have_size == get->body_size)
     {
@@ -167,7 +167,7 @@ static bool http_get_body_func (bool * error, window_unsigned_char * output, con
     
     if (get->body_size == 0)
     {
-	window_release (get->client->raw, CRLF_LEN);
+	window_release (get->client->source_contents, CRLF_LEN);
 	return false;
     }
 
@@ -176,7 +176,7 @@ static bool http_get_body_func (bool * error, window_unsigned_char * output, con
     size_t want_size = get->body_size - get->have_size;
     size_t pull_size = want_size < max_pull_size ? want_size : max_pull_size;
 
-    if (!convert_fill_limit(error, &get->client->raw, &get->client->read.interface, pull_size))
+    if (!convert_fill_minimum(error, &get->client->fd_source.source, pull_size))
     {
 	*error = true;
 	return false;
@@ -184,7 +184,7 @@ static bool http_get_body_func (bool * error, window_unsigned_char * output, con
 
     assert (!*error);
     
-    size_t got_size = range_count (get->client->raw.region);
+    size_t got_size = range_count (get->client->source_contents.region);
 
     if (got_size > want_size)
     {
@@ -193,9 +193,9 @@ static bool http_get_body_func (bool * error, window_unsigned_char * output, con
 
     get->have_size += got_size;
 
-    window_append_bytes (output, get->client->raw.region.begin, got_size);
+    window_append_bytes (source->contents, get->client->source_contents.region.begin, got_size);
 
-    window_release (get->client->raw, got_size);
+    window_release (get->client->source_contents, got_size);
 
     assert (get->have_size <= get->body_size);
     
@@ -203,8 +203,8 @@ static bool http_get_body_func (bool * error, window_unsigned_char * output, con
     {
 	if (get->transfer_encoding_type == TRANSFER_ENCODING_CHUNKED)
 	{
-	    window_release (get->client->raw, CRLF_LEN);
-	    interface->read = http_get_contents_chunked_header_func;
+	    window_release (get->client->source_contents, CRLF_LEN);
+	    source->update = http_get_contents_chunked_header_func;
 	    return true;
 	}
 	else
@@ -245,9 +245,9 @@ static bool to_hex (size_t * n, const range_const_char * line)
     return range_index (i, *line) != 0;
 }
 
-static bool http_get_contents_chunked_header_func (bool * error, window_unsigned_char * output, convert_interface * interface, size_t limit)
+static bool http_get_contents_chunked_header_func (bool * error, convert_source * source)
 {
-    convert_interface_http_get * get = (convert_interface_http_get*) interface;
+    convert_interface_http_get * get = (convert_interface_http_get*) source;
     
     range_const_char line;
 
@@ -265,7 +265,7 @@ static bool http_get_contents_chunked_header_func (bool * error, window_unsigned
     
     get->have_size = 0;
 
-    interface->read = http_get_body_func;
+    source->update = http_get_body_func;
 
     return true;
     
@@ -274,9 +274,9 @@ fail:
     return false;
 }
 
-static bool http_get_header_func (bool * error, window_unsigned_char * output, convert_interface * interface, size_t limit)
+static bool http_get_header_func (bool * error, convert_source * source)
 {
-    convert_interface_http_get * get = (convert_interface_http_get*) interface;
+    convert_interface_http_get * get = (convert_interface_http_get*) source;
 
     range_const_char line;
 
@@ -292,11 +292,11 @@ static bool http_get_header_func (bool * error, window_unsigned_char * output, c
 	switch (get->transfer_encoding_type)
 	{
 	case TRANSFER_ENCODING_IDENTITY:
-	    interface->read = http_get_body_func;
+	    source->update = http_get_body_func;
 	    break;
 	    
 	case TRANSFER_ENCODING_CHUNKED:
-	    interface->read = http_get_contents_chunked_header_func;
+	    source->update = http_get_contents_chunked_header_func;
 	    break;
 	    
 	default:
@@ -316,9 +316,9 @@ fail:
     return false;
 }
 
-static bool http_get_status_func (bool * error, window_unsigned_char * output, convert_interface * interface, size_t limit)
+static bool http_get_status_func (bool * error, convert_source * source)
 {
-    convert_interface_http_get * get = (convert_interface_http_get*) interface;
+    convert_interface_http_get * get = (convert_interface_http_get*) source;
     
     range_const_char line;
 
@@ -341,7 +341,7 @@ static bool http_get_status_func (bool * error, window_unsigned_char * output, c
 	log_fatal ("Server returned error status %zu", status);
     }
 
-    interface->read = http_get_header_func;
+    source->update = http_get_header_func;
 
     return true;
     
@@ -361,9 +361,9 @@ static bool get_request (int fd, const char * host, const char * port, const cha
 			port);
 }
 
-convert_interface * http_client_get (http_client * client, const char * path)
+convert_source * http_client_get (http_client * client, const char * path)
 {
-    if (!get_request (client->read.fd, client->host, client->port, path))
+    if (!get_request (client->fd_source.fd, client->host, client->port, path))
     {
 	log_fatal ("Failed to message server");
     }
@@ -371,9 +371,9 @@ convert_interface * http_client_get (http_client * client, const char * path)
     convert_interface_http_get * retval = calloc (1, sizeof (*retval));
 
     retval->client = client;
-    retval->interface.read = http_get_status_func;
+    retval->source.update = http_get_status_func;
     
-    return (convert_interface*) retval;
+    return &retval->source;
 
 fail:
     return NULL;
@@ -391,7 +391,7 @@ http_client * http_client_connect (const char * host, const char * port)
     
     http_client * retval = calloc (1, sizeof (*retval));
 
-    retval->read = convert_interface_fd_init(fd);
+    retval->fd_source = fd_source_init (.fd = fd, .contents = &retval->source_contents);
 
     retval->host = strdup (host);
     retval->port = strdup (port);
@@ -406,7 +406,7 @@ void http_client_disconnect (http_client * client)
     free (client);
 }
 
-void http_get_free (convert_interface * interface)
+void http_get_free (convert_source * source)
 {
-    free (interface);
+    free (source);
 }

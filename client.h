@@ -2,10 +2,10 @@
 #include <stddef.h>
 #include <stdbool.h>
 #define FLAT_INCLUDES
-#include "../array/range.h"
+#include "../range/def.h"
 #include "../window/def.h"
 #include "../keyargs/keyargs.h"
-#include "../convert/def.h"
+#include "../convert/source.h"
 #endif
 
 /** @file http/client.h
@@ -24,6 +24,6 @@ http_client * http_client_connect (const char * host, const char * port);
 */
 
 void http_client_disconnect (http_client * client); ///< Destroys the given connection handle and frees any associated memory. Note - the handle should not have any active get requests associated with it, let those finish or result in error before using this function to destroy their connection.
-convert_interface * http_client_get (http_client * client, const char * path); ///< Given a connection and requested file path, this function returns a chain_read handle for reading the requested file path from the server.
+convert_source * http_client_get (http_client * client, const char * path); ///< Given a connection and requested file path, this function returns a chain_read handle for reading the requested file path from the server.
 
-void http_get_free (convert_interface * interface);
+void http_get_free (convert_source * source);
